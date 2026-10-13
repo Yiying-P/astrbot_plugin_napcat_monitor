@@ -1,0 +1,44 @@
+{
+  "check_interval": {
+    "description": "连接检测间隔（秒）",
+    "type": "int",
+    "default": 30,
+    "hint": "每隔多少秒检测一次 NapCat 连接状态"
+  },
+  "api_timeout": {
+    "description": "API 调用超时（秒）",
+    "type": "int",
+    "default": 10,
+    "hint": "调用 OneBot get_status 接口的等待超时"
+  },
+  "enable_auto_reconnect": {
+    "description": "是否启用自动重连",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后仅监控与通知，不做自动重连"
+  },
+  "max_restart_attempts": {
+    "description": "连续重启适配器最大次数",
+    "type": "int",
+    "default": 3,
+    "hint": "达到上限后停止自动重启，需人工干预"
+  },
+  "restart_cooldown": {
+    "description": "两次重启最小间隔（秒）",
+    "type": "int",
+    "default": 300,
+    "hint": "防止频繁重启导致循环"
+  },
+  "notify_group_id": {
+    "description": "断线/恢复通知的群号",
+    "type": "string",
+    "default": "",
+    "hint": "留空则不发送群通知；断线瞬间通道可能不可用，通知会失败并记录日志"
+  },
+  "notify_user_id": {
+    "description": "断线/恢复通知的QQ号",
+    "type": "string",
+    "default": "",
+    "hint": "留空则不发送私聊通知"
+  }
+}
