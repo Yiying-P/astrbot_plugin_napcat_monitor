@@ -1,0 +1,21 @@
+name: astrbot_plugin_napcat_monitor
+display_name: NapCat 断线监控
+desc: |
+  NapCat（OneBot v11）断线监控与自动重连插件。
+
+  功能：
+  1. 定时检测 aiocqhttp 适配器与 NapCat 之间的反向 WebSocket 连接状态；
+  2. 断线时自动记录日志，并可向指定 QQ 群/用户发送通知；
+  3. 适配器异常时自动重启适配器完成重连，等待 NapCat 侧自动恢复；
+  4. 提供 /napcat status、/napcat reconnect 指令。
+
+  指令：
+  - /napcat status  查看当前连接状态与最近事件
+  - /napcat reconnect  手动触发检测与重连（仅管理员）
+short_desc: 监控 NapCat 连接并在断线时自动重连
+version: 1.0.0
+author: Yiying-P
+repo: https://github.com/Yiying-P/astrbot_plugin_napcat_monitor
+support_platforms:
+  - aiocqhttp
+astrbot_version: ">=4.16,<5"
