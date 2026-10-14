@@ -7,13 +7,19 @@ desc: |
   1. 定时检测 aiocqhttp 适配器与 NapCat 之间的反向 WebSocket 连接状态；
   2. 断线时自动记录日志，并可向指定 QQ 群/用户发送通知；
   3. 适配器异常时自动重启适配器完成重连，等待 NapCat 侧自动恢复；
-  4. 提供 /napcat status、/napcat reconnect 指令。
+  4. 提供 /napcat status、/napcat reconnect 指令；
+  5. 断连统计（v2.0.0-beta）：累计断线/恢复/重启次数持久化保存，
+     并提供 WebUI 插件页面展示统计与事件历史。
 
   指令：
-  - /napcat status  查看当前连接状态与最近事件
+  - /napcat status  查看当前连接状态、断连统计与最近事件
   - /napcat reconnect  手动触发检测与重连（仅管理员）
-short_desc: 监控 NapCat 连接并在断线时自动重连
-version: 1.0.0
+
+  插件页面：
+  - WebUI -> 插件 -> 本插件详情页，打开「断连统计」页面
+  - 显示当前连接状态、累计断线/恢复/重启次数、最近断线/恢复时间、事件历史
+short_desc: 监控 NapCat 连接并在断线时自动重连（含断连统计页面）
+version: 2.0.0-beta
 author: Yiying-P
 repo: https://github.com/Yiying-P/astrbot_plugin_napcat_monitor
 support_platforms:

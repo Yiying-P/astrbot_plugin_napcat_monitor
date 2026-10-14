@@ -9,8 +9,10 @@
   - 适配器进程异常（状态 ERROR / 运行任务结束）时，自动通过 `PlatformManager.reload()` 重启适配器；
   - 适配器正常但 NapCat 客户端断开时，等待 NapCat 侧自动重连，插件持续监控并在恢复后上报。
 - **通知**：可配置断线 / 恢复时向指定 QQ 群或用户发送通知（断线瞬间通道不可用时，发送失败仅记录日志，恢复后会补发恢复通知）。
-- **人工干预指令**：`/napcat status` 查看状态与最近事件；`/napcat reconnect` 手动触发检测与重连（仅管理员）。
+- **人工干预指令**：`/napcat status` 查看状态、断连统计与最近事件；`/napcat reconnect` 手动触发检测与重连（仅管理员）。
 - **防循环保护**：连续重启次数上限、重启冷却时间，防止异常死循环。
+- **断连统计（v2.0.0-beta）**：累计断线 / 恢复 / 适配器重启次数与事件历史**持久化保存**（`data/plugins/astrbot_plugin_napcat_monitor/stats.json`，重启 AstrBot 不丢失），并提供 **WebUI 插件页面**可视化展示。
+- **插件页面（v2.0.0-beta）**：WebUI → 插件 → 本插件详情页 → 「断连统计」视图，展示当前连接状态、累计断线/恢复/重启次数、最近断线/恢复时间、实时状态与事件历史表（每 10 秒自动刷新，支持一键重置统计）。
 
 ## 工作原理（简要）
 
@@ -39,7 +41,12 @@ AstrBot 的 aiocqhttp 适配器以**反向 WebSocket 服务器**方式运行（�
                ├── metadata.yaml
                ├── main.py
                ├── _conf_schema.json
-               └── README.md
+               ├── README.md
+               └── views/
+                   └── dashboard/               <- 插件页面（断连统计）
+                       ├── index.html
+                       ├── style.css
+                       └── app.js
    ```
 2. 重启 AstrBot，或在 WebUI **插件** 页面点击 **重载插件**。
 
@@ -58,6 +65,8 @@ AstrBot 的 aiocqhttp 适配器以**反向 WebSocket 服务器**方式运行（�
 | `restart_cooldown` | 两次重启最小间隔（秒） | 300 |
 | `notify_group_id` | 通知群号（留空不通知） | 空 |
 | `notify_user_id` | 通知 QQ 号（留空不通知） | 空 |
+| `stats_enabled` | 是否启用断连统计与插件页面 | true |
+| `stats_max_events` | 事件历史最大条数（超出自动丢弃最早记录） | 100 |
 
 ## 指令
 
@@ -71,4 +80,5 @@ AstrBot 的 aiocqhttp 适配器以**反向 WebSocket 服务器**方式运行（�
 - 反向 WS 模式下，**NapCat 侧**通常自带自动重连（NapCat WebUI 网络配置中可调整重连间隔）。本插件负责监控、告警，以及在 AstrBot 适配器异常时重启适配器。
 - 断线瞬间 QQ 通道不可用，此时发送通知会失败（插件会记录日志）；连接恢复后会补发"连接已恢复"通知。
 - 若连续重启达到上限，插件会停止自动重启并记录日志，需要人工检查 AstrBot / NapCat 日志。
-- 事件记录保存在插件进程内存中（最多 50 条），重启 AstrBot 后清空；完整历史请查看 AstrBot WebUI 日志。
+- 断线 / 恢复 / 重启事件统计**持久化**保存于 `data/plugins/astrbot_plugin_napcat_monitor/stats.json`（v2.0.0-beta），可在插件页面查看；如需清空，在页面点击「重置统计」。
+- 插件页面依赖 AstrBot 的 Plugin Views 机制（`context.register_web_api` + `views/` 目录），AstrBot >= v4.20 支持；更低版本插件仍可正常运行（仅无页面）。安装后如页面未出现，请在 WebUI 插件页点击「重载插件」。

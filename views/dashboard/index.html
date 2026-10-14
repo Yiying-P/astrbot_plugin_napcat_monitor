@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NapCat 断连统计</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <header class="page-head">
+    <div>
+      <h1>NapCat 断连统计</h1>
+      <p class="subtitle">aiocqhttp 适配器 ↔ NapCat 连接监控面板（v2.0.0-beta）</p>
+    </div>
+    <div class="head-actions">
+      <span id="status-badge" class="badge">检测中…</span>
+      <button id="btn-refresh" class="btn" type="button">刷新</button>
+      <button id="btn-reset" class="btn btn-danger" type="button">重置统计</button>
+    </div>
+  </header>
+
+  <section class="cards">
+    <div class="card">
+      <div class="card-label">累计断线</div>
+      <div class="card-value" id="total-disconnects">–</div>
+      <div class="card-note">自首次记录以来</div>
+    </div>
+    <div class="card">
+      <div class="card-label">累计恢复</div>
+      <div class="card-value" id="total-reconnects">–</div>
+      <div class="card-note">断线后成功恢复</div>
+    </div>
+    <div class="card">
+      <div class="card-label">累计重启</div>
+      <div class="card-value" id="restarts-total">–</div>
+      <div class="card-note">适配器自动重启</div>
+    </div>
+    <div class="card">
+      <div class="card-label">最近断线</div>
+      <div class="card-value card-value-sm" id="last-disconnect">–</div>
+      <div class="card-note" id="last-disconnect-detail">–</div>
+    </div>
+    <div class="card">
+      <div class="card-label">最近恢复</div>
+      <div class="card-value card-value-sm" id="last-reconnect">–</div>
+      <div class="card-note" id="last-reconnect-detail">–</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>实时状态</h2>
+      <span id="updated-at" class="muted"></span>
+    </div>
+    <div id="monitor-box" class="monitor-box">等待数据…</div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>事件历史</h2>
+      <span class="muted" id="event-count"></span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>类型</th>
+            <th>详情</th>
+          </tr>
+        </thead>
+        <tbody id="event-body">
+          <tr><td colspan="3" class="muted">暂无事件</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

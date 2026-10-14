@@ -1,12 +1,14 @@
 """
-NapCat (OneBot v11) 断线监控与自动重连插件 for AstrBot
+NapCat (OneBot v11) 断线监控与自动重连插件 for AstrBot v2.0.0-beta
 
 功能：
 1. 定时检测 aiocqhttp 适配器（NapCat 反向 WebSocket）的连接状态；
 2. 断线时记录日志、发送通知（可配置目标群/用户）；
 3. 检测到适配器本身异常（状态 ERROR / 运行任务已结束）时，
    自动通过 PlatformManager 重启适配器，实现"自动重连"；
-4. 提供 /napcat status、/napcat reconnect 指令方便人工查看与干预。
+4. 提供 /napcat status、/napcat reconnect 指令方便人工查看与干预；
+5. 【v2.0.0-beta】断连统计：累计断连/恢复/重启次数持久化到 data/plugins/ 下，
+   并在 AstrBot WebUI 提供插件页面（views/dashboard）展示统计与事件历史。
 
 原理说明：
 - AstrBot 的 aiocqhttp 适配器以"反向 WebSocket 服务器"运行（默认 0.0.0.0:6199/ws），
@@ -21,11 +23,19 @@ NapCat (OneBot v11) 断线监控与自动重连插件 for AstrBot
        插件持续监控并等待恢复；
     b. 适配器进程异常（run task 结束 / 状态为 ERROR）-> 调用 PlatformManager.reload()
        重新加载适配器，让 WS 服务器重新启动。
+
+插件页面（WebUI -> 插件详情 -> NapCat 断连监控）：
+- 后端路由通过 context.register_web_api() 注册：
+    /astrbot_plugin_napcat_monitor/stats        GET  返回断连统计
+    /astrbot_plugin_napcat_monitor/stats/reset  POST 重置统计
+- 前端 views/dashboard/index.html 通过 window.AstrBotPluginView 桥接调用。
 """
 
 import asyncio
+import json
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from aiocqhttp.exceptions import ActionFailed, ApiNotAvailable, NetworkError
@@ -37,8 +47,166 @@ from astrbot.api.star import Context, Star
 # PlatformStatus 枚举: pending / running / error / stopped
 from astrbot.core.platform.platform import PlatformStatus
 
+# 插件 Web API 响应/请求（AstrBot 4.20+ 提供；旧版本自动降级兼容）
+try:  # pragma: no cover - 由具体 AstrBot 版本决定分支
+    from astrbot.api.web import error_response, json_response, request  # noqa: F401
+except ImportError:  # AstrBot < 4.20 兜底
+    from quart import jsonify, request  # type: ignore  # noqa: F401
+
+    def json_response(data: Any = None, *, status_code: int = 200, **kw: Any):
+        return jsonify({} if data is None else data), status_code
+
+    def error_response(message: str, *, status_code: int = 400, **kw: Any):
+        return jsonify({"status": "error", "message": message}), status_code
+
+
+# 插件数据目录（data/plugins/astrbot_plugin_napcat_monitor/）
+try:  # pragma: no cover
+    from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+except ImportError:  # pragma: no cover
+    def get_astrbot_plugin_data_path() -> str:
+        return str(Path("data") / "plugins")
+
+
+PLUGIN_NAME = "astrbot_plugin_napcat_monitor"
+
 # 单平台检测返回: (是否在线, 描述)
 _CHECK_RESULT = tuple[bool, str]
+
+_EVENT_LABELS = {
+    "offline": "断线",
+    "online": "恢复",
+    "restart": "重启",
+    "restart_give_up": "放弃重启",
+}
+
+
+class StatsStore:
+    """断连统计持久化存储。
+
+    数据保存在 <AstrBot data>/plugins/astrbot_plugin_napcat_monitor/stats.json，
+    跨重启保留。字段：
+      total_disconnects  累计断线次数
+      total_reconnects   累计恢复次数
+      restarts_total     累计适配器重启次数
+      current_status     当前状态: unknown / online / offline
+      last_disconnect    最近一次断线时间(字符串)
+      last_disconnect_ts 最近一次断线时间戳
+      last_reconnect     最近一次恢复时间(字符串)
+      last_reconnect_ts  最近一次恢复时间戳
+      last_restart       最近一次重启时间(字符串)
+      first_seen         首次记录时间
+      events             事件历史（按时间正序，最多 max_events 条）
+    """
+
+    def __init__(self, data_dir: str | Path, max_events: int = 100) -> None:
+        self.path = Path(data_dir) / "stats.json"
+        self.max_events = int(max_events) if int(max_events) > 0 else 100
+        self.data: dict[str, Any] = {
+            "total_disconnects": 0,
+            "total_reconnects": 0,
+            "restarts_total": 0,
+            "current_status": "unknown",
+            "last_disconnect": "",
+            "last_disconnect_ts": 0,
+            "last_reconnect": "",
+            "last_reconnect_ts": 0,
+            "last_restart": "",
+            "first_seen": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "events": [],
+        }
+        self._load()
+
+    # ------------------------------------------------------------------
+    def _load(self) -> None:
+        try:
+            if not self.path.exists():
+                return
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                for key in (
+                    "total_disconnects",
+                    "total_reconnects",
+                    "restarts_total",
+                    "current_status",
+                    "last_disconnect",
+                    "last_disconnect_ts",
+                    "last_reconnect",
+                    "last_reconnect_ts",
+                    "last_restart",
+                    "first_seen",
+                    "events",
+                ):
+                    if key in raw:
+                        self.data[key] = raw[key]
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[NapCat监控] 读取统计文件失败(将重新初始化): {e}")
+
+    def save(self) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(self.data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            tmp.replace(self.path)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[NapCat监控] 写入统计文件失败: {e}")
+
+    # ------------------------------------------------------------------
+    def record(self, event_type: str, desc: str) -> None:
+        """记录一条事件并更新对应计数（断线/恢复/重启）。"""
+        now = datetime.now()
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+        ts = now.timestamp()
+
+        if event_type == "offline":
+            self.data["total_disconnects"] += 1
+            self.data["current_status"] = "offline"
+            self.data["last_disconnect"] = now_str
+            self.data["last_disconnect_ts"] = ts
+        elif event_type == "online":
+            self.data["total_reconnects"] += 1
+            self.data["current_status"] = "online"
+            self.data["last_reconnect"] = now_str
+            self.data["last_reconnect_ts"] = ts
+        elif event_type == "restart":
+            self.data["restarts_total"] += 1
+            self.data["last_restart"] = now_str
+
+        self.data["events"].append(
+            {"time": now_str, "ts": ts, "type": event_type, "desc": desc}
+        )
+        events = self.data["events"]
+        if len(events) > self.max_events:
+            self.data["events"] = events[-self.max_events :]
+        self.save()
+
+    def set_status(self, status: str) -> None:
+        self.data["current_status"] = status
+        self.save()
+
+    def reset(self) -> None:
+        """清空统计（保留 first_seen 与当前状态）。"""
+        status = self.data.get("current_status", "unknown")
+        self.data = {
+            "total_disconnects": 0,
+            "total_reconnects": 0,
+            "restarts_total": 0,
+            "current_status": status,
+            "last_disconnect": "",
+            "last_disconnect_ts": 0,
+            "last_reconnect": "",
+            "last_reconnect_ts": 0,
+            "last_restart": "",
+            "first_seen": self.data.get("first_seen", ""),
+            "events": [],
+        }
+        self.save()
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self.data)
 
 
 class NapCatMonitorPlugin(Star):
@@ -56,9 +224,62 @@ class NapCatMonitorPlugin(Star):
         self._last_error: str = ""  # 最近一次 API 错误
         self._restart_count = 0  # 连续重启次数（恢复后清零）
         self._last_restart_ts = 0.0  # 上次重启时间戳
-        self._history: list[dict[str, Any]] = []  # 内存中的事件记录
+
+        # ---- 断连统计（v2.0.0-beta）----
+        self._stats_enabled = bool(self.config.get("stats_enabled", True))
+        self._stats = StatsStore(
+            Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME,
+            max_events=int(self.config.get("stats_max_events", 100) or 100),
+        )
+
+        # ---- 插件页面 Web API（v2.0.0-beta）----
+        if self._stats_enabled and getattr(context, "register_web_api", None):
+            try:
+                context.register_web_api(
+                    f"/{PLUGIN_NAME}/stats",
+                    self.api_stats,
+                    ["GET"],
+                    "NapCat 断连统计",
+                )
+                context.register_web_api(
+                    f"/{PLUGIN_NAME}/stats/reset",
+                    self.api_reset_stats,
+                    ["POST"],
+                    "重置断连统计",
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"[NapCat监控] 注册插件页面 API 失败: {e}")
 
         self._monitor_task = asyncio.create_task(self._monitor_loop())
+
+    # ======================================================================
+    # 插件页面 Web API
+    # ======================================================================
+    def _stats_payload(self) -> dict[str, Any]:
+        payload = self._stats.to_dict()
+        payload["monitor"] = {
+            "online": self._online,
+            "last_desc": self._last_desc,
+            "restart_count": self._restart_count,
+            "offline_since": (
+                datetime.fromtimestamp(self._offline_since).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                if self._offline_since
+                else ""
+            ),
+        }
+        return payload
+
+    async def api_stats(self) -> Any:
+        """GET /astrbot_plugin_napcat_monitor/stats -> 断连统计 JSON"""
+        return json_response(self._stats_payload())
+
+    async def api_reset_stats(self) -> Any:
+        """POST /astrbot_plugin_napcat_monitor/stats/reset -> 重置统计"""
+        self._stats.reset()
+        logger.info(f"[NapCat监控] 统计已由 {request.username or '未知用户'} 重置")
+        return json_response({"ok": True, "stats": self._stats.to_dict()})
 
     # ======================================================================
     # 平台实例获取
@@ -197,6 +418,7 @@ class NapCatMonitorPlugin(Star):
                 "[NapCat监控] 检测到断线\n"
                 f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"详情: {desc}\n"
+                f"累计断线次数: {self._stats.data['total_disconnects']}\n"
                 "已进入自动重连流程，请留意恢复通知。"
             )
         )
@@ -220,6 +442,7 @@ class NapCatMonitorPlugin(Star):
                 "[NapCat监控] 连接已恢复\n"
                 f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"断线时长: {duration:.0f} 秒\n"
+                f"累计恢复次数: {self._stats.data['total_reconnects']}\n"
                 f"详情: {desc}"
             )
         )
@@ -330,31 +553,35 @@ class NapCatMonitorPlugin(Star):
             self.logger.warning(f"[NapCat监控] 发送私聊通知失败(通道可能已断): {e}")
 
     # ======================================================================
-    # 事件记录
+    # 事件记录（统一写入持久化统计）
     # ======================================================================
     def _record_event(self, event_type: str, desc: str) -> None:
-        self._history.append(
-            {
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "type": event_type,
-                "desc": desc,
-            }
-        )
-        # 只保留最近 50 条
-        if len(self._history) > 50:
-            self._history = self._history[-50:]
+        if self._stats_enabled:
+            self._stats.record(event_type, desc)
+        else:
+            # 统计关闭时仍保留内存事件供 status 指令使用
+            if not hasattr(self, "_memory_history"):
+                self._memory_history: list[dict[str, Any]] = []
+            self._memory_history.append(
+                {
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "type": event_type,
+                    "desc": desc,
+                }
+            )
+            if len(self._memory_history) > 50:
+                self._memory_history = self._memory_history[-50:]
+
+    def _event_list(self) -> list[dict[str, Any]]:
+        if self._stats_enabled:
+            return list(self._stats.data.get("events", []))
+        return getattr(self, "_memory_history", [])
 
     def _fmt_history(self, limit: int = 8) -> list[str]:
-        type_label = {
-            "offline": "断线",
-            "online": "恢复",
-            "restart": "重启",
-            "restart_give_up": "放弃重启",
-        }
         lines = []
-        for h in self._history[-limit:]:
-            label = type_label.get(h["type"], h["type"])
-            lines.append(f"[{h['time']}] {label}: {h['desc']}")
+        for h in self._event_list()[-limit:]:
+            label = _EVENT_LABELS.get(h.get("type", ""), h.get("type", ""))
+            lines.append(f"[{h.get('time', '')}] {label}: {h.get('desc', '')}")
         return lines
 
     # ======================================================================
@@ -409,7 +636,19 @@ class NapCatMonitorPlugin(Star):
         lines.append(f"检测间隔: {self.config.get('check_interval', 30)} 秒")
         lines.append(f"自动重连: {'开启' if self.config.get('enable_auto_reconnect', True) else '关闭'}")
 
-        if self._history:
+        if self._stats_enabled:
+            s = self._stats.data
+            lines.append("----- 断连统计 (v2.0.0-beta) -----")
+            lines.append(f"累计断线: {s['total_disconnects']} 次")
+            lines.append(f"累计恢复: {s['total_reconnects']} 次")
+            lines.append(f"累计重启: {s['restarts_total']} 次")
+            if s["last_disconnect"]:
+                lines.append(f"最近断线: {s['last_disconnect']}")
+            if s["last_reconnect"]:
+                lines.append(f"最近恢复: {s['last_reconnect']}")
+
+        events = self._event_list()
+        if events:
             lines.append("----- 最近事件 -----")
             lines.extend(self._fmt_history())
         else:

@@ -40,5 +40,17 @@
     "type": "string",
     "default": "",
     "hint": "留空则不发送私聊通知"
+  },
+  "stats_enabled": {
+    "description": "是否启用断连统计（含插件页面）",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后不再持久化断线/恢复/重启统计，插件页面显示为空"
+  },
+  "stats_max_events": {
+    "description": "事件历史最大条数",
+    "type": "int",
+    "default": 100,
+    "hint": "超过上限后自动丢弃最早的事件记录"
   }
 }
